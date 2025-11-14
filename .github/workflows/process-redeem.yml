@@ -11,26 +11,24 @@ permissions:
 jobs:
   redeem:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout workflow repo
+      - name: Checkout (workflow repo)
         uses: actions/checkout@v4
 
-      - name: Set up Node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Install Octokit
+      - name: Install dependencies
         run: npm install @octokit/rest
 
-      - name: Process redeem
-        run: node process.js
+      - name: Run redeem processor
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           REQUESTS_REPO_OWNER: ${{ github.repository_owner }}
           REQUESTS_REPO_NAME: ${{ github.event.repository.name }}
-
           WRITE_TOKEN_USERS_REPO: ${{ secrets.WRITE_TOKEN_USERS_REPO }}
           CODES_REPO_READ_TOKEN: ${{ secrets.CODES_REPO_READ_TOKEN }}
+        run: node process.js
