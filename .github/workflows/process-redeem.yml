@@ -12,7 +12,7 @@ jobs:
   redeem:
     runs-on: ubuntu-latest
     steps:
-      - name: Get issue fields
+      - name: Parse issue body for username/hwid/code
         id: parse
         run: |
           BODY=$(jq -r '.issue.body' "$GITHUB_EVENT_PATH")
@@ -41,18 +41,29 @@ jobs:
           token: ${{ secrets.WRITE_TOKEN_USERS_REPO }}
           path: users-repo
 
-      - name: Validate and commit user
+      - name: Validate code and add user (python)
+        env:
+          USERNAME: ${{ steps.parse.outputs.username }}
+          HWID: ${{ steps.parse.outputs.hwid }}
+          CODE: ${{ steps.parse.outputs.code }}
         run: |
           python3 - <<'PY'
-import json, hashlib, datetime, sys
+import os, json, hashlib, datetime, sys
 from pathlib import Path
-username = "${{ steps.parse.outputs.username }}".strip()
-hwid = "${{ steps.parse.outputs.hwid }}".strip()
-code = "${{ steps.parse.outputs.code }}".strip()
 
+username = os.getenv("USERNAME","").strip()
+hwid = os.getenv("HWID","").strip()
+code = os.getenv("CODE","").strip()
+
+if not username or not hwid or not code:
+    print("Missing environment inputs")
+    sys.exit(2)
+
+# load active codes
 codes_path = Path("codes-repo/active_codes.json")
 if not codes_path.exists():
-    print("codes file missing"); sys.exit(3)
+    print("codes file missing")
+    sys.exit(3)
 codes = json.load(open(codes_path, "r", encoding="utf-8"))
 
 # find code entry
@@ -62,9 +73,11 @@ for c in codes.get("codes", []):
         found = c
         break
 if not found:
-    print("Code not found"); sys.exit(4)
+    print("Code not found")
+    sys.exit(4)
 if found.get("used", False):
-    print("Code already used"); sys.exit(5)
+    print("Code already used")
+    sys.exit(5)
 
 # load users file
 users_path = Path("users-repo/users.json")
@@ -72,10 +85,11 @@ data = {"users": [], "expired_users": []}
 if users_path.exists():
     data = json.load(open(users_path, "r", encoding="utf-8"))
 
-# ensure code not already assigned
+# defensive: ensure code not already in users
 for u in data.get("users", []):
     if u.get("code","").strip().upper() == code.strip().upper():
-        print("Code already assigned in users.json"); sys.exit(6)
+        print("Code already assigned in users.json")
+        sys.exit(6)
 
 # create user entry
 now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
@@ -98,24 +112,25 @@ for c in codes["codes"]:
     if c.get("code","").strip().upper() == code.strip().upper():
         c["used"] = True
 
-# write back
+# write back files
 open(users_path, "w", encoding="utf-8").write(json.dumps(data, indent=2, ensure_ascii=False))
 open(codes_path, "w", encoding="utf-8").write(json.dumps(codes, indent=2, ensure_ascii=False))
+
 print("Added user and marked code used")
 PY
 
-      - name: Commit & push
+      - name: Commit & push changes
         run: |
           cd users-repo
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add users.json
-          git commit -m "Add user from redeem issue #${{ github.event.issue.number }}" || echo "no changes"
-          git push
+          git add users.json || true
+          git commit -m "Add user from redeem issue #${{ github.event.issue.number }}" || echo "no changes to commit"
+          git push || echo "push failed"
           cd ..
           cd codes-repo
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add active_codes.json
-          git commit -m "Mark code used from redeem issue #${{ github.event.issue.number }}" || echo "no changes"
-          git push
+          git add active_codes.json || true
+          git commit -m "Mark code used from redeem issue #${{ github.event.issue.number }}" || echo "no changes to commit"
+          git push || echo "push failed"
