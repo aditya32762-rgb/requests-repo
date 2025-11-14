@@ -12,34 +12,6 @@ jobs:
   redeem:
     runs-on: ubuntu-latest
     steps:
-      - name: Parse issue body (username/hwid/code)
-        id: parse
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const issue = context.payload.issue;
-            const body = issue.body || "";
-            const lines = body.split(/\r?\n/);
-            function findVal(prefix) {
-              const ln = lines.find(l => l.toLowerCase().startsWith(prefix + ":"));
-              return ln ? ln.split(":").slice(1).join(":").trim() : "";
-            }
-            const username = findVal("username");
-            const hwid = findVal("hwid");
-            const code = findVal("code");
-            if (!username || !hwid || !code) {
-              await github.issues.createComment({
-                ...context.repo,
-                issue_number: issue.number,
-                body: "Invalid request format. Please include lines exactly like:\n```\nusername: yourname\nhwid: YOUR-HWID-STRING\ncode: REDEEM-CODE\n```"
-              });
-              throw new Error("Invalid request format");
-            }
-            core.setOutput("username", username);
-            core.setOutput("hwid", hwid);
-            core.setOutput("code", code);
-            core.setOutput("issue_number", String(issue.number));
-
       - name: Checkout codes-repo (read)
         uses: actions/checkout@v4
         with:
@@ -54,59 +26,75 @@ jobs:
           token: ${{ secrets.WRITE_TOKEN_USERS_REPO }}
           path: users-repo
 
-      - name: Validate code & add user (python)
+      - name: Validate issue and update JSONs (python)
         env:
-          USERNAME: ${{ steps.parse.outputs.username }}
-          HWID: ${{ steps.parse.outputs.hwid }}
-          CODE: ${{ steps.parse.outputs.code }}
-          ISSUE_NUMBER: ${{ steps.parse.outputs.issue_number }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: |
           python3 - <<'PY'
-import os, json, hashlib, datetime, sys
+import json, hashlib, datetime, sys, subprocess
 from pathlib import Path
-
-username = os.environ.get("USERNAME","").strip()
-hwid = os.environ.get("HWID","").strip()
-code = os.environ.get("CODE","").strip()
-issue_no = os.environ.get("ISSUE_NUMBER","").strip()
-
-if not username or not hwid or not code:
-    print("Missing inputs")
+evt_path = os.environ.get("GITHUB_EVENT_PATH", "")
+if not evt_path:
+    evt_path = "${GITHUB_EVENT_PATH}"
+try:
+    ev = json.load(open(evt_path, "r", encoding="utf-8"))
+except Exception as e:
+    print("Failed to read GITHUB_EVENT_PATH:", e)
     sys.exit(2)
 
-codes_path = Path("codes-repo/active_codes.json")
-if not codes_path.exists():
-    print("active_codes.json missing")
+issue = ev.get("issue", {})
+body = issue.get("body","") or ""
+lines = [l.strip() for l in body.splitlines() if l.strip()]
+def find_val(prefix):
+    for l in lines:
+        if l.lower().startswith(prefix + ":"):
+            return l.split(":",1)[1].strip()
+    return ""
+username = find_val("username")
+hwid = find_val("hwid")
+code = find_val("code")
+if not username or not hwid or not code:
+    print("Invalid issue format. Expected lines: username:, hwid:, code:")
+    print("Issue body was:\\n", body)
     sys.exit(3)
+
+# Paths
+codes_path = Path("codes-repo/active_codes.json")
+users_path = Path("users-repo/users.json")
+if not codes_path.exists():
+    print("Missing codes file at", codes_path)
+    sys.exit(4)
 codes = json.load(open(codes_path, "r", encoding="utf-8"))
 
+# find code entry
 found = None
 for c in codes.get("codes", []):
     if c.get("code","").strip().upper() == code.strip().upper():
         found = c
         break
 if not found:
-    print("Code not found")
-    sys.exit(4)
-if found.get("used", False):
-    print("Code already used")
+    print("Code not found:", code)
     sys.exit(5)
+if found.get("used", False):
+    print("Code already used:", code)
+    sys.exit(6)
 
-users_path = Path("users-repo/users.json")
+# load users file
 data = {"users": [], "expired_users": []}
 if users_path.exists():
     data = json.load(open(users_path, "r", encoding="utf-8"))
 
+# ensure code not already in users
 for u in data.get("users", []):
     if u.get("code","").strip().upper() == code.strip().upper():
         print("Code already assigned in users.json")
-        sys.exit(6)
+        sys.exit(7)
 
+# create user entry
 now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
 duration = int(found.get("durationDays", 30))
 expiry = (now + datetime.timedelta(days=duration)).isoformat()
 hwid_hash = hashlib.sha256(hwid.encode('utf-8')).hexdigest()
-
 user = {
   "username": username,
   "passwordHash": "",
@@ -123,25 +111,33 @@ for c in codes["codes"]:
     if c.get("code","").strip().upper() == code.strip().upper():
         c["used"] = True
 
+# write back files
 open(users_path, "w", encoding="utf-8").write(json.dumps(data, indent=2, ensure_ascii=False))
 open(codes_path, "w", encoding="utf-8").write(json.dumps(codes, indent=2, ensure_ascii=False))
-print(f"Added user {username} (issue #{issue_no})")
+
+print("User added:", username)
 PY
 
-      - name: Commit & push changes
-        env:
-          ISSUE_NUMBER: ${{ steps.parse.outputs.issue_number }}
+      - name: Commit users.json
         run: |
           cd users-repo || exit 1
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add users.json || true
-          git commit -m "Add user from redeem issue #$ISSUE_NUMBER" || echo "no changes to commit"
-          git push || echo "push failed"
-          cd ..
+          if git commit -m "Add user from redeem issue" ; then
+            git push || echo "push failed"
+          else
+            echo "No changes to commit in users-repo"
+          fi
+
+      - name: Commit active_codes.json
+        run: |
           cd codes-repo || exit 1
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add active_codes.json || true
-          git commit -m "Mark code used from redeem issue #$ISSUE_NUMBER" || echo "no changes to commit"
-          git push || echo "push failed"
+          if git commit -m "Mark code used from redeem" ; then
+            git push || echo "push failed"
+          else
+            echo "No changes to commit in codes-repo"
+          fi
