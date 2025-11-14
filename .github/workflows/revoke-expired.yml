@@ -1,0 +1,31 @@
+name: Revoke expired users
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # daily at 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  revoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install deps
+        run: npm install @octokit/rest
+
+      - name: Run revoke script
+        env:
+          WRITE_TOKEN_USERS_REPO: ${{ secrets.WRITE_TOKEN_USERS_REPO }}
+          CODES_REPO_READ_TOKEN: ${{ secrets.CODES_REPO_READ_TOKEN }}
+        run: node revoke.js
