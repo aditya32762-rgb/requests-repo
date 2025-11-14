@@ -27,9 +27,6 @@ jobs:
           path: users-repo
 
       - name: Validate issue and update JSONs
-        env:
-          GITHUB_EVENT_PATH: ${{ github.event_path }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           python3 - <<'PY'
 import os, json, hashlib, datetime, sys
