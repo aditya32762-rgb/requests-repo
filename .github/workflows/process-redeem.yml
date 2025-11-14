@@ -26,44 +26,49 @@ jobs:
           token: ${{ secrets.WRITE_TOKEN_USERS_REPO }}
           path: users-repo
 
-      - name: Validate issue and update JSONs (python)
+      - name: Validate issue and update JSONs
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: |
           python3 - <<'PY'
-import json, hashlib, datetime, sys, subprocess
+import os, json, hashlib, datetime, sys
 from pathlib import Path
-evt_path = os.environ.get("GITHUB_EVENT_PATH", "")
-if not evt_path:
-    evt_path = "${GITHUB_EVENT_PATH}"
-try:
-    ev = json.load(open(evt_path, "r", encoding="utf-8"))
-except Exception as e:
-    print("Failed to read GITHUB_EVENT_PATH:", e)
+
+evt_path = os.environ.get("GITHUB_EVENT_PATH")
+if not evt_path or not Path(evt_path).exists():
+    print("GITHUB_EVENT_PATH not set or file missing:", evt_path)
     sys.exit(2)
 
-issue = ev.get("issue", {})
-body = issue.get("body","") or ""
+try:
+    evt = json.load(open(evt_path, "r", encoding="utf-8"))
+except Exception as e:
+    print("Failed to read event JSON:", e)
+    sys.exit(3)
+
+issue = evt.get("issue", {}) or {}
+body = issue.get("body", "") or ""
 lines = [l.strip() for l in body.splitlines() if l.strip()]
+
 def find_val(prefix):
     for l in lines:
         if l.lower().startswith(prefix + ":"):
             return l.split(":",1)[1].strip()
     return ""
+
 username = find_val("username")
 hwid = find_val("hwid")
 code = find_val("code")
-if not username or not hwid or not code:
+
+if not (username and hwid and code):
     print("Invalid issue format. Expected lines: username:, hwid:, code:")
     print("Issue body was:\\n", body)
-    sys.exit(3)
+    sys.exit(4)
 
-# Paths
+# load active codes
 codes_path = Path("codes-repo/active_codes.json")
-users_path = Path("users-repo/users.json")
 if not codes_path.exists():
     print("Missing codes file at", codes_path)
-    sys.exit(4)
+    sys.exit(5)
 codes = json.load(open(codes_path, "r", encoding="utf-8"))
 
 # find code entry
@@ -74,12 +79,13 @@ for c in codes.get("codes", []):
         break
 if not found:
     print("Code not found:", code)
-    sys.exit(5)
+    sys.exit(6)
 if found.get("used", False):
     print("Code already used:", code)
-    sys.exit(6)
+    sys.exit(7)
 
 # load users file
+users_path = Path("users-repo/users.json")
 data = {"users": [], "expired_users": []}
 if users_path.exists():
     data = json.load(open(users_path, "r", encoding="utf-8"))
@@ -88,7 +94,7 @@ if users_path.exists():
 for u in data.get("users", []):
     if u.get("code","").strip().upper() == code.strip().upper():
         print("Code already assigned in users.json")
-        sys.exit(7)
+        sys.exit(8)
 
 # create user entry
 now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
