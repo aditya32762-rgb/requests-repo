@@ -29,6 +29,7 @@ jobs:
       - name: Validate issue and update JSONs
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           python3 - <<'PY'
 import os, json, hashlib, datetime, sys
@@ -64,14 +65,13 @@ if not (username and hwid and code):
     print("Issue body was:\\n", body)
     sys.exit(4)
 
-# load active codes
 codes_path = Path("codes-repo/active_codes.json")
 if not codes_path.exists():
     print("Missing codes file at", codes_path)
     sys.exit(5)
+
 codes = json.load(open(codes_path, "r", encoding="utf-8"))
 
-# find code entry
 found = None
 for c in codes.get("codes", []):
     if c.get("code","").strip().upper() == code.strip().upper():
@@ -84,19 +84,16 @@ if found.get("used", False):
     print("Code already used:", code)
     sys.exit(7)
 
-# load users file
 users_path = Path("users-repo/users.json")
 data = {"users": [], "expired_users": []}
 if users_path.exists():
     data = json.load(open(users_path, "r", encoding="utf-8"))
 
-# ensure code not already in users
 for u in data.get("users", []):
     if u.get("code","").strip().upper() == code.strip().upper():
         print("Code already assigned in users.json")
         sys.exit(8)
 
-# create user entry
 now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
 duration = int(found.get("durationDays", 30))
 expiry = (now + datetime.timedelta(days=duration)).isoformat()
@@ -112,12 +109,10 @@ user = {
 }
 data["users"].append(user)
 
-# mark code used
 for c in codes["codes"]:
     if c.get("code","").strip().upper() == code.strip().upper():
         c["used"] = True
 
-# write back files
 open(users_path, "w", encoding="utf-8").write(json.dumps(data, indent=2, ensure_ascii=False))
 open(codes_path, "w", encoding="utf-8").write(json.dumps(codes, indent=2, ensure_ascii=False))
 
