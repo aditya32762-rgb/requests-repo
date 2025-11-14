@@ -11,160 +11,26 @@ permissions:
 jobs:
   redeem:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Process redeem issue (JS)
-        uses: actions/github-script@v7
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          script: |
-            const { Octokit } = require("@octokit/rest");
-            const fs = require("fs");
+          node-version: 20
 
-            // Read the issue payload
-            const issue = context.payload.issue || {};
-            const body = (issue.body || "").trim();
-            const lines = body.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-            function findVal(prefix){
-              const ln = lines.find(l => l.toLowerCase().startsWith(prefix + ":"));
-              return ln ? ln.split(":").slice(1).join(":").trim() : "";
-            }
-            const username = findVal("username");
-            const hwid = findVal("hwid");
-            const code = findVal("code");
+      - name: Install Octokit
+        run: npm install @octokit/rest
 
-            if(!username || !hwid || !code){
-              await github.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                body: "Invalid request format. Please include lines exactly like:\n```\nusername: yourname\nhwid: YOUR-HWID-STRING\ncode: REDEEM-CODE\n```"
-              });
-              throw new Error("Invalid issue format");
-            }
-
-            // tokens passed from repository secrets
-            const codesToken = process.env.CODES_REPO_READ_TOKEN;
-            const usersToken = process.env.WRITE_TOKEN_USERS_REPO;
-            if(!codesToken || !usersToken){
-              await github.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                body: "Server error: missing secrets. Admin must set WRITE_TOKEN_USERS_REPO and CODES_REPO_READ_TOKEN in repository secrets."
-              });
-              throw new Error("Missing tokens");
-            }
-
-            const codesOcto = new Octokit({ auth: codesToken });
-            const usersOcto = new Octokit({ auth: usersToken });
-
-            const codesOwner = "aditya32762-rgb";
-            const codesRepo = "codes-repo";
-            const usersOwner = "aditya32762-rgb";
-            const usersRepo = "users-repo";
-            const activePath = "active_codes.json";
-            const usersPath = "users.json";
-
-            // helper: get and decode file content
-            async function getJson(octo, owner, repo, path){
-              try{
-                const res = await octo.repos.getContent({ owner, repo, path });
-                const content = Buffer.from(res.data.content, 'base64').toString("utf8");
-                return { data: JSON.parse(content), sha: res.data.sha };
-              }catch(err){
-                throw new Error(`Failed to fetch ${owner}/${repo}/${path}: ${err.message}`);
-              }
-            }
-
-            // fetch active codes
-            const codesObj = await getJson(codesOcto, codesOwner, codesRepo, activePath);
-            const codesData = codesObj.data;
-
-            // find code
-            const found = (codesData.codes || []).find(c => (c.code||"").trim().toUpperCase() === code.trim().toUpperCase());
-            if(!found){
-              await github.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number,
-                body: `Code not found: \`${code}\``
-              });
-              throw new Error("Code not found");
-            }
-            if(found.used){
-              await github.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number,
-                body: `Code already used: \`${code}\``
-              });
-              throw new Error("Code already used");
-            }
-
-            // fetch users.json from users-repo
-            const usersObj = await getJson(usersOcto, usersOwner, usersRepo, usersPath);
-            const usersData = usersObj.data || { users: [], expired_users: [] };
-
-            // ensure code not assigned already in users
-            if((usersData.users || []).some(u => (u.code||"").trim().toUpperCase() === code.trim().toUpperCase())){
-              await github.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number,
-                body: `Code already assigned in users.json: \`${code}\``
-              });
-              throw new Error("Code assigned");
-            }
-
-            // create user entry
-            const crypto = require("crypto");
-            const now = new Date();
-            const durationDays = parseInt(found.durationDays || 30, 10);
-            const expiry = new Date(now.getTime() + durationDays*24*60*60*1000).toISOString();
-            const hwidHash = crypto.createHash("sha256").update(hwid, "utf8").digest("hex");
-
-            const newUser = {
-              username: username,
-              passwordHash: "",
-              hwidHash: hwidHash,
-              code: found.code,
-              activatedUtc: now.toISOString(),
-              expiryUtc: expiry,
-              revoked: false
-            };
-            usersData.users = usersData.users || [];
-            usersData.users.push(newUser);
-
-            // mark code used
-            codesData.codes = codesData.codes || [];
-            for(const c of codesData.codes){
-              if((c.code||"").trim().toUpperCase() === code.trim().toUpperCase()){
-                c.used = true;
-              }
-            }
-
-            // commit users.json back to users-repo
-            const usersContent = Buffer.from(JSON.stringify(usersData, null, 2)).toString("base64");
-            await usersOcto.repos.createOrUpdateFileContents({
-              owner: usersOwner,
-              repo: usersRepo,
-              path: usersPath,
-              message: `Add user ${username} from issue #${issue.number}`,
-              content: usersContent,
-              sha: usersObj.sha
-            });
-
-            // commit active_codes.json back to codes-repo
-            const codesContent = Buffer.from(JSON.stringify(codesData, null, 2)).toString("base64");
-            await codesOcto.repos.createOrUpdateFileContents({
-              owner: codesOwner,
-              repo: codesRepo,
-              path: activePath,
-              message: `Mark code used: ${code} (from issue #${issue.number})`,
-              content: codesContent,
-              sha: codesObj.sha
-            });
-
-            // success comment
-            await github.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.number,
-              body: `Redeem successful for user \`${username}\`. Access granted until ${expiry}.`
-            });
+      - name: Process redeem
+        run: node process.js
         env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          REQUESTS_REPO_OWNER: ${{ github.repository_owner }}
+          REQUESTS_REPO_NAME: ${{ github.event.repository.name }}
+
           WRITE_TOKEN_USERS_REPO: ${{ secrets.WRITE_TOKEN_USERS_REPO }}
           CODES_REPO_READ_TOKEN: ${{ secrets.CODES_REPO_READ_TOKEN }}
