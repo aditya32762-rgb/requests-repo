@@ -3,6 +3,8 @@ name: Process redeem issue
 on:
   issues:
     types: [opened]
+workflow_dispatch:
+    
 
 permissions:
   issues: write
