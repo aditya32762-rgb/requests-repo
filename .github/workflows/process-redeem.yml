@@ -46,6 +46,7 @@ jobs:
           USERNAME: ${{ steps.parse.outputs.username }}
           HWID: ${{ steps.parse.outputs.hwid }}
           CODE: ${{ steps.parse.outputs.code }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           python3 - <<'PY'
 import os, json, hashlib, datetime, sys
@@ -54,6 +55,7 @@ from pathlib import Path
 username = os.getenv("USERNAME","").strip()
 hwid = os.getenv("HWID","").strip()
 code = os.getenv("CODE","").strip()
+issue_no = os.getenv("ISSUE_NUMBER","")
 
 if not username or not hwid or not code:
     print("Missing environment inputs")
@@ -120,17 +122,19 @@ print("Added user and marked code used")
 PY
 
       - name: Commit & push changes
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           cd users-repo
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add users.json || true
-          git commit -m "Add user from redeem issue #${{ github.event.issue.number }}" || echo "no changes to commit"
+          git commit -m "Add user from redeem issue #${ISSUE_NUMBER}" || echo "no changes to commit"
           git push || echo "push failed"
           cd ..
           cd codes-repo
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add active_codes.json || true
-          git commit -m "Mark code used from redeem issue #${{ github.event.issue.number }}" || echo "no changes to commit"
+          git commit -m "Mark code used from redeem issue #${ISSUE_NUMBER}" || echo "no changes to commit"
           git push || echo "push failed"
