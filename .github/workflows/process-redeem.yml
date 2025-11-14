@@ -1,0 +1,121 @@
+name: Process redeem issue
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  redeem:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get issue fields
+        id: parse
+        run: |
+          BODY=$(jq -r '.issue.body' "$GITHUB_EVENT_PATH")
+          USERNAME=$(echo "$BODY" | grep -i '^username:' | head -n1 | cut -d':' -f2- | xargs)
+          HWID=$(echo "$BODY" | grep -i '^hwid:' | head -n1 | cut -d':' -f2- | xargs)
+          CODE=$(echo "$BODY" | grep -i '^code:' | head -n1 | cut -d':' -f2- | xargs)
+          if [ -z "$USERNAME" ] || [ -z "$HWID" ] || [ -z "$CODE" ]; then
+            gh issue comment ${{ github.event.issue.number }} --body "Invalid request format. Please include lines: username:..., hwid:..., code:..."
+            exit 1
+          fi
+          echo "username=$USERNAME" >> $GITHUB_OUTPUT
+          echo "hwid=$HWID" >> $GITHUB_OUTPUT
+          echo "code=$CODE" >> $GITHUB_OUTPUT
+
+      - name: Checkout codes-repo (read)
+        uses: actions/checkout@v4
+        with:
+          repository: aditya32762-rgb/codes-repo
+          token: ${{ secrets.CODES_REPO_READ_TOKEN }}
+          path: codes-repo
+
+      - name: Checkout users-repo (write)
+        uses: actions/checkout@v4
+        with:
+          repository: aditya32762-rgb/users-repo
+          token: ${{ secrets.WRITE_TOKEN_USERS_REPO }}
+          path: users-repo
+
+      - name: Validate and commit user
+        run: |
+          python3 - <<'PY'
+import json, hashlib, datetime, sys
+from pathlib import Path
+username = "${{ steps.parse.outputs.username }}".strip()
+hwid = "${{ steps.parse.outputs.hwid }}".strip()
+code = "${{ steps.parse.outputs.code }}".strip()
+
+codes_path = Path("codes-repo/active_codes.json")
+if not codes_path.exists():
+    print("codes file missing"); sys.exit(3)
+codes = json.load(open(codes_path, "r", encoding="utf-8"))
+
+# find code entry
+found = None
+for c in codes.get("codes", []):
+    if c.get("code","").strip().upper() == code.strip().upper():
+        found = c
+        break
+if not found:
+    print("Code not found"); sys.exit(4)
+if found.get("used", False):
+    print("Code already used"); sys.exit(5)
+
+# load users file
+users_path = Path("users-repo/users.json")
+data = {"users": [], "expired_users": []}
+if users_path.exists():
+    data = json.load(open(users_path, "r", encoding="utf-8"))
+
+# ensure code not already assigned
+for u in data.get("users", []):
+    if u.get("code","").strip().upper() == code.strip().upper():
+        print("Code already assigned in users.json"); sys.exit(6)
+
+# create user entry
+now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+duration = int(found.get("durationDays", 30))
+expiry = (now + datetime.timedelta(days=duration)).isoformat()
+hwid_hash = hashlib.sha256(hwid.encode('utf-8')).hexdigest()
+user = {
+  "username": username,
+  "passwordHash": "",
+  "hwidHash": hwid_hash,
+  "code": found.get("code"),
+  "activatedUtc": now.isoformat(),
+  "expiryUtc": expiry,
+  "revoked": False
+}
+data["users"].append(user)
+
+# mark code used
+for c in codes["codes"]:
+    if c.get("code","").strip().upper() == code.strip().upper():
+        c["used"] = True
+
+# write back
+open(users_path, "w", encoding="utf-8").write(json.dumps(data, indent=2, ensure_ascii=False))
+open(codes_path, "w", encoding="utf-8").write(json.dumps(codes, indent=2, ensure_ascii=False))
+print("Added user and marked code used")
+PY
+
+      - name: Commit & push
+        run: |
+          cd users-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add users.json
+          git commit -m "Add user from redeem issue #${{ github.event.issue.number }}" || echo "no changes"
+          git push
+          cd ..
+          cd codes-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add active_codes.json
+          git commit -m "Mark code used from redeem issue #${{ github.event.issue.number }}" || echo "no changes"
+          git push
