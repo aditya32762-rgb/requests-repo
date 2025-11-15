@@ -31,6 +31,5 @@ PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
 GITHUB_EVENT_PATH: ${{ github.event_path }}
 GITHUB_REPOSITORY: ${{ github.repository }}
 run: |
-# process.js will read the issue from the event payload and perform redeem logic
 npm ci || true
 node process.js
