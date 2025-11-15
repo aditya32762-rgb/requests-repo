@@ -1,0 +1,36 @@
+name: Redeem on Issue
+
+
+on:
+issues:
+types: [opened]
+
+
+permissions:
+issues: write
+contents: read
+
+
+jobs:
+handle-redeem:
+runs-on: ubuntu-latest
+steps:
+- name: Checkout request repo
+uses: actions/checkout@v4
+
+
+- name: Setup Node
+uses: actions/setup-node@v4
+with:
+node-version: '20'
+
+
+- name: Run process.js
+env:
+PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+GITHUB_EVENT_PATH: ${{ github.event_path }}
+GITHUB_REPOSITORY: ${{ github.repository }}
+run: |
+# process.js will read the issue from the event payload and perform redeem logic
+npm ci || true
+node process.js
